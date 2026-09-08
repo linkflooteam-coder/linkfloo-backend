@@ -1,0 +1,11 @@
+﻿.venv/
+venv/
+*.sqlite3
+db.sqlite3
+media/
+staticfiles/
+*firebase*.json
+*serviceAccount*.json
+.env
+__pycache__/
+*.pyc
