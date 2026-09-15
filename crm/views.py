@@ -16,6 +16,7 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from .models import UserDevice
+from .notifications import send_push_to_user
 
 from .models import Lead, Property, PropertyMedia, Message, ActivityLog
 from .serializers import (
@@ -143,36 +144,75 @@ class UnifiedSyncView(APIView):
         )
 
         now = timezone.now()
+        
 
-        # ---------------------------------------------------------------------
-        # 1. Ingest Properties
-        # ---------------------------------------------------------------------
-        for item in client_changes.get('properties', []):
-            prop_id = item.get('id')
-            if not prop_id:
-                continue
+        # # ---------------------------------------------------------------------
+        # # 1. Ingest Properties
+        # # ---------------------------------------------------------------------
+        # for item in client_changes.get('properties', []):
+        #     prop_id = item.get('id')
+        #     if not prop_id:
+        #         continue
 
-            if item.get('is_deleted') is True:
-                Property.objects.filter(id=prop_id, tenant=tenant).update(
-                    is_deleted=True,
-                    updated_at_server=now,
-                )
-                acknowledged_ids.append(str(prop_id))
-                continue
+        #     if item.get('is_deleted') is True:
+        #         Property.objects.filter(id=prop_id, tenant=tenant).update(
+        #             is_deleted=True,
+        #             updated_at_server=now,
+        #         )
+        #         acknowledged_ids.append(str(prop_id))
+        #         continue
 
-            item_data = {
-                k: v for k, v in item.items()
-                if k not in ['id', 'tenant_id', 'created_at_server', 'updated_at_server']
-            }
-            item_data = _sanitize_item_datetimes(item_data)
+        #     item_data = {
+        #         k: v for k, v in item.items()
+        #         if k not in ['id', 'tenant_id', 'created_at_server', 'updated_at_server']
+        #     }
+        #     item_data = _sanitize_item_datetimes(item_data)
 
-            Property.objects.update_or_create(
-                id=prop_id,
-                tenant=tenant,
-                defaults={**item_data, 'tenant': tenant},
-            )
-            valid_property_ids.add(str(prop_id))
-            acknowledged_ids.append(str(prop_id))
+        #     Property.objects.update_or_create(
+        #         id=prop_id,
+        #         tenant=tenant,
+        #         defaults={**item_data, 'tenant': tenant},
+        #     )
+        #     valid_property_ids.add(str(prop_id))
+        #     acknowledged_ids.append(str(prop_id))
+
+        # # ---------------------------------------------------------------------
+        # # 2. Ingest Leads
+        # # ---------------------------------------------------------------------
+        # for item in client_changes.get('leads', []):
+        #     lead_id = item.get('id')
+        #     if not lead_id:
+        #         continue
+
+        #     if item.get('is_deleted') is True:
+        #         Lead.objects.filter(id=lead_id, tenant=tenant).update(
+        #             is_deleted=True,
+        #             updated_at_server=now,
+        #         )
+        #         acknowledged_ids.append(str(lead_id))
+        #         continue
+
+        #     item_data = {
+        #         k: v for k, v in item.items()
+        #         if k not in ['id', 'tenant_id', 'created_at_server', 'updated_at_server']
+        #     }
+
+        #     linked_prop = item_data.get('linked_property_id')
+        #     if linked_prop and str(linked_prop) not in valid_property_ids:
+        #         item_data['linked_property_id'] = None
+
+        #     if not item_data.get('assigned_agent_id'):
+        #         item_data['assigned_agent_id'] = request.user.id
+
+        #     item_data = _sanitize_item_datetimes(item_data)
+
+        #     Lead.objects.update_or_create(
+        #         id=lead_id,
+        #         tenant=tenant,
+        #         defaults={**item_data, 'tenant': tenant},
+        #     )
+        #     valid_lead_ids.add(str(lead_id))
+        #     acknowledged_ids.append(str(lead_id))
 
         # ---------------------------------------------------------------------
         # 2. Ingest Leads
@@ -204,13 +244,30 @@ class UnifiedSyncView(APIView):
 
             item_data = _sanitize_item_datetimes(item_data)
 
-            Lead.objects.update_or_create(
+            # Capture (lead, created)
+            lead, created = Lead.objects.update_or_create(
                 id=lead_id,
                 tenant=tenant,
                 defaults={**item_data, 'tenant': tenant},
             )
             valid_lead_ids.add(str(lead_id))
             acknowledged_ids.append(str(lead_id))
+
+            # Push Notification Dispatcher (Triggered only for newly created leads)
+            if created:
+                target_user = getattr(lead, 'assigned_agent', None) or getattr(lead, 'owner', None) or request.user
+                lead_name = getattr(lead, 'name', '') or "New Client"
+                lead_pk = str(lead.id)
+
+                # Freeze loop variables with default args to avoid lambda closure bugs
+                transaction.on_commit(
+                    lambda u=target_user, lid=lead_pk, name=lead_name: send_push_to_user(
+                        user=u,
+                        title="New Lead Received!",
+                        body=f"{name} just inquired about properties.",
+                        data={"lead_id": lid, "type": "new_lead"}
+                    )
+                )
 
         # ---------------------------------------------------------------------
         # 3. Ingest Property Media
