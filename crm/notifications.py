@@ -11,7 +11,7 @@ def send_push_to_user(user, title, body, data=None):
     """
     tokens = list(UserDevice.objects.filter(user=user).values_list('fcm_token', flat=True))
     if not tokens:
-        logger.info(f"[FCM] No tokens found for user: {user.username}")
+        logger.info(f"[FCM] No tokens found for user: {str(user)}")
         return 0
 
     # FCM data values must be strings
@@ -25,7 +25,7 @@ def send_push_to_user(user, title, body, data=None):
 
     try:
         response = messaging.send_each_for_multicast(message)
-        logger.info(f"[FCM] Sent {response.success_count}/{len(tokens)} to {user.username}")
+        logger.info(f"[FCM] Sent {response.success_count}/{len(tokens)} to {str(user)}")
 
         if response.failure_count > 0:
             for idx, resp in enumerate(response.responses):
