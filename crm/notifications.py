@@ -1,8 +1,23 @@
+import os
 import logging
-from firebase_admin import messaging
+import firebase_admin
+from firebase_admin import credentials, messaging
+from django.conf import settings
 from .models import UserDevice
 
 logger = logging.getLogger(__name__)
+
+# Auto-initialize Firebase Admin SDK if not already active
+if not firebase_admin._apps:
+    cred_path = os.path.join(settings.BASE_DIR, 'firebase-service-account.json')
+    if os.path.exists(cred_path):
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
+        logger.info(f"[Firebase] Initialized with credentials: {cred_path}")
+    else:
+        firebase_admin.initialize_app()
+        logger.warning(f"[Firebase] Credential file not found at {cred_path}, fell back to default.")
+
 
 def send_push_to_user(user, title, body, data=None):
     """
@@ -14,7 +29,6 @@ def send_push_to_user(user, title, body, data=None):
         logger.info(f"[FCM] No tokens found for user: {str(user)}")
         return 0
 
-    # FCM data values must be strings
     payload_data = {k: str(v) for k, v in (data or {}).items()}
 
     message = messaging.MulticastMessage(
