@@ -19,7 +19,7 @@ if not firebase_admin._apps:
         logger.info(f"[Firebase] Initialized with credentials: {cred_path}")
     else:
         firebase_admin.initialize_app()
-        logger.warning(f"[Firebase] Credential file not found, fell back to default.")
+        logger.warning("[Firebase] Credential file not found, fell back to default.")
 
 
 def _clean_stale_tokens(tokens, responses):
@@ -28,7 +28,7 @@ def _clean_stale_tokens(tokens, responses):
         if not resp.success:
             bad_token = tokens[idx]
             err_str = str(resp.exception)
-            if "NOT_FOUND" in err_str or "UNREGISTERED" in err_str or "INVALID_ARGUMENT" in err_str:
+            if any(k in err_str for k in ("NOT_FOUND", "UNREGISTERED", "INVALID_ARGUMENT")):
                 UserDevice.objects.filter(fcm_token=bad_token).delete()
                 logger.info(f"[FCM] Removed invalid device token: {bad_token[:12]}...")
 
@@ -42,8 +42,9 @@ def send_push_to_user(user, title, body, data=None):
         logger.info(f"[FCM] No tokens found for user: {str(user)}")
         return 0
 
-    # Ensure all data values are strings
     payload_data = {k: str(v) for k, v in (data or {}).items()}
+    payload_data.setdefault('title', str(title))
+    payload_data.setdefault('body', str(body))
     payload_data.setdefault('contact_name', str(title))
     payload_data.setdefault('detailed_notes', str(body))
     payload_data.setdefault('status_tag', 'Follow-up Due')
@@ -76,14 +77,16 @@ def send_push_to_user(user, title, body, data=None):
 def send_lead_reminder_push(user, lead, status_tag="Follow-up Due", custom_message=None):
     """
     Constructs and sends a WhatsApp-style lead card notification with specs and past notes.
+    Guarantees that contact name and phone number never duplicate.
     """
     tokens = list(UserDevice.objects.filter(user=user).values_list('fcm_token', flat=True))
     if not tokens:
         logger.info(f"[FCM] No tokens found for user: {str(user)}")
         return 0
 
-    # 1. Primary Title: Name first, phone number fallback
-    contact_name = lead.full_name.strip() if (lead.full_name and lead.full_name.strip()) else str(lead.phone_number)
+    # 1. Primary Title: STRICTLY Name if available; otherwise Phone Number (never both)
+    has_name = bool(lead.full_name and lead.full_name.strip())
+    contact_title = lead.full_name.strip() if has_name else str(lead.phone_number)
 
     # 2. Extract and format property specs (BHK • Type • Locality • Budget)
     specs = []
@@ -97,7 +100,7 @@ def send_lead_reminder_push(user, lead, status_tag="Follow-up Due", custom_messa
         specs.append(f"₹{lead.budget_max}")
     specs_line = " • ".join(specs)
 
-    # 3. Format past conversation notes
+    # 3. Format past conversation notes without repeating phone number or name
     notes = lead.requirements_notes.strip() if (lead.requirements_notes and lead.requirements_notes.strip()) else ""
 
     if custom_message:
@@ -109,12 +112,15 @@ def send_lead_reminder_push(user, lead, status_tag="Follow-up Due", custom_messa
     elif specs_line:
         detailed_body = f'📍 {specs_line}'
     else:
-        detailed_body = f"Scheduled follow-up with {lead.phone_number}"
+        detailed_body = "Tap to view conversation & details"
 
-    # 4. Map directly to keys parsed by Flutter FCM handler
+    # 4. Supply both legacy ('title', 'body') and new ('contact_name', 'detailed_notes') keys
+    # This prevents the open app from falling back to "Linkfloo CRM / New update received"
     payload_data = {
         'lead_id': str(lead.id),
-        'contact_name': str(contact_name),
+        'title': str(contact_title),
+        'body': str(detailed_body),
+        'contact_name': str(contact_title),
         'status_tag': str(status_tag),
         'detailed_notes': str(detailed_body),
         'click_action': 'FLUTTER_NOTIFICATION_CLICK',
@@ -122,7 +128,7 @@ def send_lead_reminder_push(user, lead, status_tag="Follow-up Due", custom_messa
 
     message = messaging.MulticastMessage(
         notification=messaging.Notification(
-            title=contact_name,
+            title=contact_title,
             body=detailed_body,
         ),
         data=payload_data,
