@@ -584,47 +584,14 @@ class UnifiedSyncView(APIView):
         valid_lead_ids = set(
             str(lid) for lid in Lead.objects.filter(tenant=tenant).values_list('id', flat=True)
         )
-
-        # =====================================================================
-        # PHASE 1: INGESTION (DEPENDENCY ORDER)
-        # =====================================================================
-
-        # ---------------------------------------------------------------------
-        # 1. Ingest Projects
-        # ---------------------------------------------------------------------
-        for item in client_changes.get('projects', []):
-            proj_id = item.get('id')
-            if not proj_id:
-                continue
-
-            if item.get('is_deleted') is True:
-                Project.objects.filter(id=proj_id, tenant=tenant).update(
-                    is_deleted=True,
-                    updated_at_server=now,
-                )
-                acknowledged_ids.append(str(proj_id))
-                continue
-
-            item_data = {
-                k: v for k, v in item.items()
-                if k not in ['id', 'tenant_id', 'created_at_server', 'updated_at_server']
-            }
-            if not item_data.get('assigned_agent_id'):
-                item_data['assigned_agent_id'] = request.user.id
-
-            item_data = _sanitize_item_datetimes(item_data)
-
-            Project.objects.update_or_create(
-                id=proj_id,
-                tenant=tenant,
-                defaults={**item_data, 'tenant': tenant},
-            )
-            valid_project_ids.add(str(proj_id))
-            acknowledged_ids.append(str(proj_id))
-
-        # ---------------------------------------------------------------------
+# ---------------------------------------------------------------------
         # 2. Ingest Properties
         # ---------------------------------------------------------------------
+        # Cache valid property model fields to prevent FieldError on unknown keys
+        allowed_property_fields = {f.name for f in Property._meta.fields} | {
+            f.attname for f in Property._meta.fields
+        }
+
         for item in client_changes.get('properties', []):
             prop_id = item.get('id')
             if not prop_id:
@@ -643,6 +610,12 @@ class UnifiedSyncView(APIView):
                 if k not in ['id', 'tenant_id', 'created_at_server', 'updated_at_server']
             }
 
+            # Map amenities key from Flutter to Django model schema
+            if 'standard_amenities' in item_data:
+                amenities = item_data.pop('standard_amenities')
+                if 'standard_amenity_ids' not in item_data:
+                    item_data['standard_amenity_ids'] = amenities
+
             # Resolve project relationship
             project_id = item_data.pop('project_id', None)
             if project_id and str(project_id) in valid_project_ids:
@@ -654,6 +627,9 @@ class UnifiedSyncView(APIView):
                 item_data['assigned_agent_id'] = request.user.id
 
             item_data = _sanitize_item_datetimes(item_data)
+
+            # Defensive filter: discard any client-only keys not in Property model
+            item_data = {k: v for k, v in item_data.items() if k in allowed_property_fields}
 
             Property.objects.update_or_create(
                 id=prop_id,
