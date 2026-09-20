@@ -740,8 +740,9 @@ class ActivityLogAdmin(admin.ModelAdmin):
         return False
 
 
+# In crm/admin.py
 @admin.register(UserDevice)
 class UserDeviceAdmin(admin.ModelAdmin):
-    list_display = ('user', 'platform', 'fcm_token', 'updated_at')
-    search_fields = ('user__username', 'user__email', 'fcm_token')
-    list_filter = ('platform', 'updated_at')
+    list_display = ('user', 'platform', 'updated_at')
+    # If search_fields contains 'user__username', change it to:
+    search_fields = ('user__phone_number', 'user__email', 'platform', 'fcm_token')
